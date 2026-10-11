@@ -102,11 +102,11 @@ There is a `Makefile` under `hack/docker-proxy` that can create the certificates
 The certificates will be placed under `openshift-ca` and will need to be copied to the docker machine. Note that
 the hostname `registry.okd4.example.com` needs to be setup in DNS.
 
-| Usage          | description                                     |
-|----------------|-------------------------------------------------|
-| make ca        | creates both CA and registry certificates       |
-| make quay.io   | creates the docker proxy registry for quay.io   |
-| make docker.io | creates the docker proxy registry for docker.io |
+| Usage          | description                                                                                                   |
+|----------------|---------------------------------------------------------------------------------------------------------------|
+| make ca        | creates both CA and registry certificates                                                                     |
+| make quay.io   | creates the docker proxy registry for quay.io, authenticated with the quay.io credentials from `pull-secret` |
+| make docker.io | creates the docker proxy registry for docker.io, needs `DOCKER_HUB_USERNAME` and `DOCKER_HUB_ACCESS_TOKEN`   |
 
 # Preparation
 

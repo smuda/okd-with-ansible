@@ -20,9 +20,20 @@ hospitality.
 
 2. Start the caching registry
    ```
+   export DOCKER_HUB_USERNAME=<user> DOCKER_HUB_ACCESS_TOKEN=<token>
    make docker.io
    make quay.io
    ```
+
+   `make quay.io` authenticates against quay.io with the credentials
+   from the Red Hat pull secret, since OCP release content
+   (`quay.io/openshift-release-dev/ocp-v4.0-art-dev`) cannot be pulled
+   anonymously. The pull secret is read from `pull-secret` in the repo
+   root; override with `make quay.io PULL_SECRET=/path/to/pull-secret`.
+   It requires `jq`.
+
+   To add credentials to an existing quay.io proxy, recreate it with
+   `make clean quay.io`. The cached images are kept.
 
 ## Trust certificate in docker for Mac
 

@@ -2,6 +2,7 @@ REGISTRY_HOST=registry.okd4.example.com
 DOCKER_HOST=tcp://192.168.40.20:2376
 DOCKER_TLS_VERIFY=1
 VOLUME_BASE_PATH=/share/kube-volumes/proxy
+PULL_SECRET=../../pull-secret
 
 PHONY: ca
 ca:
@@ -73,6 +74,10 @@ clean:
 
 PHONY: quay.io
 quay.io: pull
+	# Credentials are kept in shell variables so make does not echo them
+	auth=$$(jq -r '.auths["quay.io"].auth // empty' $(PULL_SECRET) | base64 -d); \
+	test -n "$$auth" || { echo "No quay.io credentials in $(PULL_SECRET)"; exit 1; }; \
+	export REGISTRY_PROXY_USERNAME="$${auth%%:*}" REGISTRY_PROXY_PASSWORD="$${auth#*:}"; \
 	DOCKER_HOST=$(DOCKER_HOST) \
     DOCKER_TLS_VERIFY=1 \
     docker run \
@@ -82,6 +87,8 @@ quay.io: pull
 		--restart=unless-stopped \
 		--name=proxy-quay.io \
 		-e REGISTRY_PROXY_REMOTEURL="https://quay.io" \
+		-e REGISTRY_PROXY_USERNAME \
+		-e REGISTRY_PROXY_PASSWORD \
 		-e REGISTRY_HTTP_ADDR=0.0.0.0:443 \
 		-v "$(VOLUME_BASE_PATH)/quay.io/certs":/certs \
 		-v "$(VOLUME_BASE_PATH)/quay.io/registry":/var/lib/registry \
