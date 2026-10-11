@@ -1,6 +1,6 @@
 ---
 # https://access.redhat.com/downloads/content/290/ver=4.18/rhel---9/4.18.13/x86_64/product-software
-okd_version: 4.20.24
+okd_version: 4.22.17
 
 # This forces the ocp releases
 openshift_client_base_url: https://mirror.openshift.com/pub/openshift-v4/amd64/clients/ocp
