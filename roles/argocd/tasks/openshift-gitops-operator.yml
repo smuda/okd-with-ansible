@@ -260,7 +260,6 @@
             g, system:authenticated, role:readonly
           scopes: '[groups]'
         redis:
-          image: registry.okd4.example.com:5010/library/redis
           resources:  # This is only used if ha.enabled is false
             limits:
               memory: 128Mi
