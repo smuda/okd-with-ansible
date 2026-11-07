@@ -2,8 +2,8 @@
   "autoMode": {
     "environment": [
       "$defaults",
-      "Repository visibility: public on GitHub (AyoyAB/okd-with-ansible). Anything committed or pushed is world-readable.",
-      "Trusted repo: /Users/john/Projects/ayoy/okd-with-ansible, remote origin https://github.com/AyoyAB/okd-with-ansible.git (default branch main).",
+      "Repository visibility: public on GitHub (smuda/okd-with-ansible). Anything committed or pushed is world-readable.",
+      "Trusted repo: /Users/john/Projects/ayoy/okd-with-ansible, remote origin https://github.com/smuda/okd-with-ansible.git (default branch main).",
       "Sensitive data (never read out, log, commit or send anywhere): pull-secret, openshift-ca/, openshift-files/ (kubeconfig, kubeadmin password), sealed-secrets-secret.yml, github-config.json, tmp-github-cluster-config.yaml, .env and inventories/*/.env, install-*.log, ~/.ssh/id_ansible.",
       "Routine commands: make lint, ansible-lint, yamllint, make molecule-*, ansible-playbook --syntax-check, git status/diff/log/add/commit, gh pr/run/api reads.",
       "CI/CD: GitHub Actions (.github/workflows/ci.yml) runs lint and molecule only; no deploy targets. The playbooks and make targets (cluster, cluster-masters, cluster-config, lbs*, wipe-nodes) act on real cluster hardware and are not routine."

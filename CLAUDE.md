@@ -2,7 +2,7 @@
 
 ### Issue tracker
 
-Issues live in GitHub Issues for AyoyAB/okd-with-ansible, managed
+Issues live in GitHub Issues for smuda/okd-with-ansible, managed
 with the `gh` CLI. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
