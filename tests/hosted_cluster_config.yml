@@ -34,6 +34,9 @@
       and _api_last | int <= hosted_cluster_pool_end.split('.')[3] | int
       and hosted_cluster_api_ip != hosted_cluster_apps_ip }}
     _doc: "{{ lookup('file', playbook_dir + '/../docs/hcp-on-virtualization.md') }}"
+    _sealed: >-
+      {{ (lookup('file', playbook_dir + '/../roles/argocd/tasks/sealed_secrets.yml') | from_yaml)
+      | select('contains', 'kubernetes.core.k8s') | list }}
     _structure_script: !unsafe |
       import json, sys, yaml
       tasks = yaml.safe_load(open(sys.argv[1]))
@@ -65,6 +68,84 @@
                         and 'hosted_cluster_api_hostname' in J(t['ansible.builtin.command'])]
       out['that'] = [str(t['ansible.builtin.assert']['that']) for t in ls if 'ansible.builtin.assert' in t]
       print(json.dumps(out))
+    _config_script: !unsafe |
+      import glob, json, os, sys, yaml
+      import jinja2
+      root = sys.argv[1]
+      load = lambda p: yaml.safe_load(open(os.path.join(root, p))) or []
+      mod = lambda t, n: t.get('ansible.builtin.' + n, t.get(n))
+      J = json.dumps
+      def flat(ts, base, inh=()):
+          # leaf tasks in execution order, imports inlined, with inherited whens
+          for t in ts:
+              w = list(inh) + ([t['when']] if 'when' in t else [])
+              for k in ('block', 'rescue', 'always'):
+                  if k in t:
+                      yield from flat(t[k], base, w)
+              f = mod(t, 'import_tasks') or mod(t, 'include_tasks')
+              if f and f.endswith('create_local_files/tasks/pull-secret.yml'):
+                  yield dict(t, _whens=str(w))
+              elif f:
+                  yield from flat(load(os.path.join(base, f)), base, w)
+              elif 'block' not in t:
+                  yield dict(t, _whens=str(w))
+      role = 'roles/hosted_cluster'
+      ls = list(flat(load(role + '/tasks/main.yml'), role + '/tasks'))
+      has_k8s = lambda t: any(k.startswith('kubernetes.core.k8s') and k != 'kubernetes.core.k8s_info' for k in t)
+      pos = lambda l: ls.index(l[0]) if l else None
+      inc = [t for t in ls if (mod(t, 'include_tasks') or '').endswith('create_local_files/tasks/pull-secret.yml')
+             or ((mod(t, 'include_role') or {}).get('name') == 'create_local_files'
+                 and mod(t, 'include_role').get('tasks_from') == 'pull-secret.yml')]
+      render = [t for t in ls if '--render-sensitive' in J(t)]
+      patch = [t for t in ls if 'from_yaml_all' in J(t)]
+      ch_new = [t for t in patch if '"channel"' in J(t) or 'channel:' in str(t) or "'channel'" in str(t)]
+      ch_new = [t for t in ch_new if 'hosted_cluster_channel' in J(t)]
+      ch_old = [t for t in ls if t not in patch and has_k8s(t) and 'hosted_cluster_channel' in J(t)
+                and 'hosted_cluster_existing' in t['_whens'] and 'spec' in J(t)]
+      ps = [t for t in ls if t not in inc and ('hosted_cluster_pull_secret_file' in J(t) or 'dockerconfigjson' in J(t))]
+      ps_apply = [t for t in ps if has_k8s(t) and 'hosted_cluster_existing' in t['_whens']]
+      out = {'inc_n': len(inc),
+             'inc_cluster_name': [(t.get('vars') or {}).get('cluster_name') for t in inc],
+             'inc_base_domain': [(t.get('vars') or {}).get('base_domain') for t in inc],
+             'inc_before_render': bool(inc and render and pos(inc) < pos(render)),
+             'ch_new': len(ch_new), 'ch_old': len(ch_old),
+             'ps_n': len(ps), 'ps_apply': len(ps_apply),
+             'ps_refs_secret_name': any('pullSecret' in J(t) for t in ls if 'hosted_cluster_existing' in t['_whens'] or has_k8s(t)),
+             'ps_no_log_missing': [t.get('name') for t in ps if t.get('no_log') is not True]}
+      # playbooks
+      def imports(f):
+          return [(i, mod(t, 'import_playbook'), t.get('vars') or {}) for i, t in enumerate(load(f))
+                  if mod(t, 'import_playbook')]
+      hp = load('deploy-hosted-cluster.yml')
+      role_play = [i for i, p in enumerate(hp) if any((r.get('role') if isinstance(r, dict) else r) == 'hosted_cluster'
+                                                       for r in p.get('roles', []))]
+      hi = [x for x in imports('deploy-hosted-cluster.yml') if x[1] == 'configure-cluster.yml']
+      out['hp_imports'] = len(hi)
+      out['hp_vars'] = hi[0][2] if hi else {}
+      out['hp_after_role'] = bool(hi and role_play and hi[0][0] > role_play[0])
+      out['okd_imports'] = len([x for x in imports('deploy-okd.yml') if x[1] == 'configure-cluster.yml'])
+      # is okd_wait_for_cluster_ready skipped? evaluate its conditions per flow
+      wait = 'okd_wait_for_cluster_ready'
+      entry = [r for p in load('configure-cluster.yml') for r in p.get('roles', [])
+               if isinstance(r, dict) and r.get('role') == wait][0]
+      tops = load('roles/' + wait + '/tasks/main.yml')
+      dflt = load('roles/' + wait + '/defaults/main.yml') if os.path.exists(os.path.join(root, 'roles', wait, 'defaults/main.yml')) else {}
+      env = jinja2.Environment()
+      def false(c, ctx):
+          for x in (c if isinstance(c, list) else [c]):
+              if not isinstance(x, bool):
+                  x = env.compile_expression(str(x))(**ctx)
+              if not x:
+                  return True
+          return False
+      def skipped(ctx):
+          if 'when' in entry and false(entry['when'], ctx):
+              return True
+          return all('when' in t and false(t['when'], ctx) for t in tops)
+      inv = load('inventories/example-ocp-hcp/group_vars/all.yml')
+      out['wait_skipped_hosted'] = skipped({**dflt, **inv, **out['hp_vars']})
+      out['wait_skipped_okd'] = [skipped({**dflt, 'openshift_agent_installation': a}) for a in (False, True)]
+      print(json.dumps(out, default=str))
     _metallb: "{{ lookup('file', playbook_dir + '/../roles/hosted_cluster/tasks/metallb.yml') }}"
   tasks:
     - name: The hcp create args carry the intended design
@@ -223,6 +304,14 @@
           - "'mode: \"0600\"' in _cluster"
         quiet: true
 
+    - name: The task applying the sealed-secrets key has no_log
+      ansible.builtin.assert:
+        that:
+          - _sealed | length == 1
+          - "'sealed_secret_secret' in _sealed[0] | to_json"
+          - _sealed[0].no_log is true
+        quiet: true
+
     - name: Longhorn has the NetworkPolicy and no Route or oauth proxy
       ansible.builtin.assert:
         that:
@@ -243,6 +332,99 @@
           - _doc is not search('(?i)\\bipi\\b')
           - _doc is not search('(?i)not\\s+ipi')
           - "'api.hcp.example.com' in _doc"
+        quiet: true
+
+    - name: Evaluate pull secret, channel and post-install wiring structurally
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_playbook_python }}"
+          - -I
+          - -c
+          - "{{ _config_script }}"
+          - "{{ playbook_dir }}/.."
+      register: _config_raw
+      changed_when: false
+
+    - name: The pull secret is generated per cluster, with telemetry opt-out
+      vars:
+        _c: "{{ _config_raw.stdout | from_json }}"
+      ansible.builtin.assert:
+        that:
+          - _c.inc_n == 1
+          - _c.inc_cluster_name | length == 1
+          - _c.inc_cluster_name[0] is search('hosted_cluster_name')
+          - _c.inc_base_domain | length == 1
+          - _c.inc_base_domain[0] is search('hosted_cluster_base_domain')
+          - _c.inc_before_render
+          - hosted_cluster_pull_secret_file is match('.*openshift-files/hcp\.example\.com/pull-secret$')
+          - opt_out_of_remote_health_reporting == true
+          - use_disconnected_registry == false
+        quiet: true
+
+    - name: The default pull secret path follows the hosted cluster name
+      vars:
+        hosted_cluster_name: other
+      ansible.builtin.assert:
+        that: hosted_cluster_pull_secret_file is match('.*openshift-files/other\.example\.com/pull-secret$')
+        quiet: true
+
+    - name: An existing HostedCluster gets the pull secret, with no_log
+      vars:
+        _c: "{{ _config_raw.stdout | from_json }}"
+      ansible.builtin.assert:
+        that:
+          - _c.ps_apply >= 1
+          - _c.ps_refs_secret_name
+          - _c.ps_no_log_missing == []
+        quiet: true
+
+    - name: The channel defaults to stable-<minor> of the release version
+      ansible.builtin.assert:
+        that: hosted_cluster_channel == 'stable-4.22'
+        quiet: true
+
+    - name: The channel follows the release version
+      vars:
+        hosted_cluster_release_version: "4.23.1"
+      ansible.builtin.assert:
+        that: hosted_cluster_channel == 'stable-4.23'
+        quiet: true
+
+    - name: The channel is set when rendering and patched on an existing HostedCluster
+      vars:
+        _c: "{{ _config_raw.stdout | from_json }}"
+      ansible.builtin.assert:
+        that:
+          - _c.ch_new == 1
+          - _c.ch_old >= 1
+        quiet: true
+
+    - name: The hosted deploy runs configure-cluster for the hosted cluster
+      vars:
+        _c: "{{ _config_raw.stdout | from_json }}"
+      ansible.builtin.assert:
+        that:
+          - _c.hp_imports == 1
+          - _c.hp_after_role
+          - (_c.hp_vars.cluster_name | default('')) is search('hosted_cluster_name')
+          - (_c.hp_vars.base_domain | default('')) is search('hosted_cluster_base_domain')
+          - _c.okd_imports == 1
+        quiet: true
+
+    - name: Waiting for the cluster is skipped for the hosted cluster only
+      vars:
+        _c: "{{ _config_raw.stdout | from_json }}"
+      ansible.builtin.assert:
+        that:
+          - _c.wait_skipped_hosted == true
+          - _c.wait_skipped_okd == [false, false]
+        quiet: true
+
+    - name: The hcp inventory installs Argo CD with the hcp values file
+      ansible.builtin.assert:
+        that:
+          - argocd == true
+          - argocd_value_file == 'values-hcp.yaml'
         quiet: true
 
     - name: Syntax-check the playbook

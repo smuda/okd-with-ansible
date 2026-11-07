@@ -7,10 +7,12 @@ runs as pods on the management cluster and a NodePool turns into
 virtual machines. The playbook `deploy-hosted-cluster.yml` does the
 whole job.
 
-Status: installed and verified as `hcp` on 2026-11-07, with the API
-reached by DNS name: two Ready nodes, version 4.22.17, 21 cluster
-operators Available and none Degraded. A second run reported
-changed=0, failed=0.
+Status: removed and installed again as `hcp` on 2026-11-07, with the
+API reached by DNS name. The removal took about 3 minutes and the
+install about 11 (636 seconds), with the operators already in place:
+two Ready nodes, version 4.22.17, 21 cluster operators Available and
+none Degraded. A second run took 19 seconds and reported changed=0,
+failed=0.
 
 The examples use `inventories/example-ocp-hcp`. The management
 cluster is okd4.example.com (OpenShift 4.22.17). All commands are run
@@ -18,21 +20,18 @@ from the repository root.
 
 ## Prerequisites
 
+The README's [Preparation](../README.md#preparation) applies, and
+`make dependencies` from [Run playbook](../README.md#run-playbook). An
+older kubernetes.core in `~/.ansible/collections` still wins over the
+pinned one; replace it with `ansible-galaxy collection install
+'kubernetes.core:6.6.0' --force`. In addition:
+
 - A running OpenShift (not OKD) management cluster, since multicluster
   engine and OpenShift Virtualization come from `redhat-operators`.
 - `openshift-files/okd4.example.com/auth/kubeconfig` for it.
-- `pull-secret` in the repository root.
 - `~/.ssh/id_ansible.pub` (or set `hosted_cluster_ssh_public_key_file`).
 - `helm` and `dig` on the machine running the playbook.
 - ssh access to the DNS server (pihole in the examples).
-- `kubernetes.core` 6.6.0, as pinned in `requirements.yml`. Version
-  2.4.0 fails on Helm 4 with `too many values to unpack`, and a copy in
-  `~/.ansible/collections` shadows the one that ships with Ansible:
-
-  ```shell
-  ansible-galaxy collection install 'kubernetes.core:6.6.0' --force
-  ```
-
 - A virtualenv with the Python `kubernetes` library, since Ansible's
   own Python lacks it. Python 3.14 works. On Python 3.15, PyYAML had no
   macOS arm64 wheel when this was written:
@@ -42,11 +41,6 @@ from the repository root.
     openshift-client/venv
   openshift-client/venv/bin/pip install 'kubernetes==37.0.1'
   ```
-
-- If an application firewall such as Little Snitch runs on the machine,
-  it must let `pip`, `helm` and `openshift-client/hcp` out. A blocked
-  binary shows up as an `i/o timeout` or a TLS handshake timeout, while
-  `curl` and `oc` still reach the same target.
 
 ## 1. Prerequisites and capacity
 
@@ -165,6 +159,19 @@ The steps, in order, each safe to run again:
    install to finish. It then checks that the kubeconfig points at
    the API name and that the API service has the API address.
 
+The pull secret is written to
+`openshift-files/hcp.example.com/pull-secret` by the same handling as
+the other clusters. With
+`opt_out_of_remote_health_reporting: true` the telemetry
+credentials are removed from it, and an existing HostedCluster gets
+the pull secret Secret updated. The update channel is
+`hosted_cluster_channel`, `stable-4.22` for 4.22.17.
+
+After the install, `configure-cluster.yml` runs against the hosted
+cluster, including ArgoCD with `argocd_value_file: values-hcp.yaml`.
+That file must exist in the ArgoCD repository, otherwise the ArgoCD
+application does not sync.
+
 With the operators already in place, the whole playbook took about 11
 minutes, including creating the hosted cluster. A first run with the
 operators missing has not been timed as one run, so allow at least an
@@ -185,6 +192,15 @@ and the console at
 https://console-openshift-console.apps.hcp.example.com. The console
 certificate is not signed by a CA that macOS trusts, so `curl` needs the
 CA or `-k` there. The kubeconfig carries the CA for the API.
+
+The console login is `kubeadmin`. Its password is in a Secret on the
+management cluster:
+
+```shell
+KUBECONFIG=openshift-files/okd4.example.com/auth/kubeconfig \
+  oc extract secret/hcp-kubeadmin-password -n clusters \
+  --keys=password --to=-
+```
 
 ## 6. Limitations
 
@@ -211,8 +227,9 @@ CA or `-k` there. The kubeconfig carries the CA for the API.
 
 ## 7. Removal
 
-This has been run once, on the same setup under an earlier cluster
-name. It took about 3 minutes and exited cleanly.
+This has been run twice, first under an earlier cluster name and then
+as `hcp` on 2026-11-07. Both times it took about 3 minutes (183
+seconds as `hcp`) and exited cleanly.
 
 ```shell
 KUBECONFIG=openshift-files/okd4.example.com/auth/kubeconfig \
@@ -226,10 +243,12 @@ Afterwards `local-cluster` was the only ManagedCluster.
 
 It left Longhorn, OpenShift Virtualization, MetalLB, multicluster
 engine, the node labels, the MachineConfig, the namespace `clusters`,
-the DNS records and `openshift-files/<name>.example.com`. The MetalLB
-pool stayed scoped to `clusters-<name>`, until the playbook was run
-under the new name. Five CertificateSigningRequests with the old name
-in theirs also remained.
+the DNS records and `openshift-files/<name>.example.com`, whose
+kubeconfig no longer works and can be deleted. The MetalLB pool stays
+scoped to `clusters-<name>`, so a reinstall under the same name reuses
+it, and a new name needs a playbook run. The first time, five
+CertificateSigningRequests with the old name in theirs remained; as
+`hcp`, none did.
 
 The default IngressController keeps `wildcardPolicy:
 WildcardsAllowed`. To revert it:

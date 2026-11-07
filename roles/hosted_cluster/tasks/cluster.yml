@@ -33,6 +33,15 @@
       {{ hosted_cluster_api_ip }}. Add the record as described in
       docs/hcp-on-virtualization.md, step 3.
 
+# Included as tasks rather than as the role: the role's dependencies
+# validate the inventory of a bare metal install. cluster_name selects the
+# hosted cluster's directory for openshift_files_directory.
+- name: Create the pull secret of the hosted cluster
+  ansible.builtin.include_tasks: ../../create_local_files/tasks/pull-secret.yml
+  vars:
+    cluster_name: "{{ hosted_cluster_name }}"
+    base_domain: "{{ hosted_cluster_base_domain }}"
+
 - name: Look for the HostedCluster
   kubernetes.core.k8s_info:
     kubeconfig: "{{ openshift_files_kubeconfig }}"
@@ -41,6 +50,34 @@
     name: "{{ hosted_cluster_name }}"
     namespace: "{{ hosted_cluster_namespace }}"
   register: hosted_cluster_existing
+
+- name: Update the pull secret and channel of the existing HostedCluster
+  when: hosted_cluster_existing.resources | length == 1
+  block:
+    - name: Update the pull secret
+      kubernetes.core.k8s:
+        kubeconfig: "{{ openshift_files_kubeconfig }}"
+        api_version: v1
+        kind: Secret
+        name: "{{ hosted_cluster_existing.resources[0].spec.pullSecret.name }}"
+        namespace: "{{ hosted_cluster_namespace }}"
+        merge_type: merge
+        definition:
+          data:
+            .dockerconfigjson: "{{ lookup('file', hosted_cluster_pull_secret_file, rstrip=false) | b64encode }}"
+      no_log: true
+
+    - name: Set the update channel
+      kubernetes.core.k8s:
+        kubeconfig: "{{ openshift_files_kubeconfig }}"
+        api_version: hypershift.openshift.io/v1beta1
+        kind: HostedCluster
+        name: "{{ hosted_cluster_name }}"
+        namespace: "{{ hosted_cluster_namespace }}"
+        merge_type: merge
+        definition:
+          spec:
+            channel: "{{ hosted_cluster_channel }}"
 
 # The hcp CLI has no flag for the API hostname and `services` is immutable,
 # so the rendered manifests are patched before they are applied. They are
@@ -75,7 +112,7 @@
       {% set _ = services.append(s) %}
       {% endif %}
       {% endfor %}
-      {% set _ = ns.out.append(d | combine({'spec': {'services': services}}, recursive=true)) %}
+      {% set _ = ns.out.append(d | combine({'spec': {'services': services, 'channel': hosted_cluster_channel}}, recursive=true)) %}
       {% else %}
       {% set _ = ns.out.append(d) %}
       {% endif %}

@@ -362,6 +362,19 @@ or certificate approval is needed.
 
 See `inventories/example-ocp-agent` for a complete example.
 
+## Hosted cluster
+
+See [docs/hcp-on-virtualization.md](docs/hcp-on-virtualization.md)
+for a hosted cluster on OpenShift Virtualization. Its console
+login is `kubeadmin`, with the password in a Secret on the
+management cluster:
+
+```shell
+KUBECONFIG=openshift-files/okd4.example.com/auth/kubeconfig \
+  oc extract secret/hcp-kubeadmin-password -n clusters \
+  --keys=password --to=-
+```
+
 ## Wiping cluster nodes
 
 To reinstall a cluster on the same machines, the old

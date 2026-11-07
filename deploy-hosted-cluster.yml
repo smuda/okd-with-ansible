@@ -10,3 +10,13 @@
   any_errors_fatal: true
   roles:
     - role: hosted_cluster
+
+# Configure the hosted cluster like the other installs. The play vars win
+# over the inventory, so openshift_files_kubeconfig is the hosted one. The
+# install directories that openshift-install waits on do not exist for it.
+- name: Configure hosted cluster
+  ansible.builtin.import_playbook: configure-cluster.yml
+  vars:
+    cluster_name: "{{ hosted_cluster_name }}"
+    base_domain: "{{ hosted_cluster_base_domain }}"
+    okd_wait_for_cluster_ready_skip: true

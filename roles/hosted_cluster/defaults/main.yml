@@ -6,6 +6,7 @@ hosted_cluster_node: worker2.okd4.example.com
 hosted_cluster_node_label_key: hosted-cluster-host
 hosted_cluster_release_version: "4.22.17"
 hosted_cluster_release_image: quay.io/openshift-release-dev/ocp-release:{{ hosted_cluster_release_version }}-multi
+hosted_cluster_channel: "stable-{{ (hosted_cluster_release_version | split('.'))[:2] | join('.') }}"
 hosted_cluster_replicas: 2
 hosted_cluster_cores: 2
 hosted_cluster_memory: 8Gi
@@ -19,7 +20,7 @@ hosted_cluster_api_ip: 192.168.60.190
 hosted_cluster_api_hostname: "api.{{ hosted_cluster_name }}.{{ hosted_cluster_base_domain }}"
 hosted_cluster_apps_ip: 192.168.60.191
 
-hosted_cluster_pull_secret_file: "{{ playbook_dir }}/pull-secret"
+hosted_cluster_pull_secret_file: "{{ playbook_dir }}/openshift-files/{{ hosted_cluster_name }}.{{ hosted_cluster_base_domain }}/pull-secret"
 hosted_cluster_ssh_public_key_file: ~/.ssh/id_ansible.pub
 hosted_cluster_kubeconfig: "{{ playbook_dir }}/openshift-files/{{ hosted_cluster_name }}.{{ hosted_cluster_base_domain }}/auth/kubeconfig"
 hosted_cluster_hcp_executable: "{{ openshift_client_directory }}/hcp"
