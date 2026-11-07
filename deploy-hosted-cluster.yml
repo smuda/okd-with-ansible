@@ -1,0 +1,12 @@
+---
+#
+# Deploy a hosted cluster on the OpenShift Virtualization of the cluster
+#
+
+- name: Deploy hosted cluster
+  hosts: localhost
+  connection: local
+  gather_facts: true
+  any_errors_fatal: true
+  roles:
+    - role: hosted_cluster

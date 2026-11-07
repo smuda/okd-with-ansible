@@ -1,0 +1,15 @@
+---
+# These name the management cluster, so openshift_files_kubeconfig from
+# local_path_definitions resolves to its kubeconfig.
+cluster_name: okd4
+base_domain: example.com
+
+# The hosted cluster is reachable as <name>.<base domain>
+hosted_cluster_name: hcp
+hosted_cluster_base_domain: example.com
+hosted_cluster_node: worker2.okd4.example.com
+hosted_cluster_pool_start: 192.168.60.190
+hosted_cluster_pool_end: 192.168.60.191
+hosted_cluster_api_ip: 192.168.60.190
+hosted_cluster_apps_ip: 192.168.60.191
+hosted_cluster_release_version: "4.22.17"

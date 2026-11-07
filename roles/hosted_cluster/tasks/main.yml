@@ -1,0 +1,15 @@
+---
+- name: Install Longhorn
+  ansible.builtin.import_tasks: longhorn.yml
+
+- name: Install OpenShift Virtualization
+  ansible.builtin.import_tasks: virtualization.yml
+
+- name: Install MetalLB
+  ansible.builtin.import_tasks: metallb.yml
+
+- name: Install multicluster engine and Hosted Control Planes
+  ansible.builtin.import_tasks: mce.yml
+
+- name: Create the hosted cluster
+  ansible.builtin.import_tasks: cluster.yml

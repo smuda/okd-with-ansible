@@ -1,0 +1,256 @@
+---
+# Offline checks of the hosted_cluster role configuration.
+# Run: make hosted-cluster-test
+- name: Validate hosted_cluster configuration
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars_files:
+    - ../roles/hosted_cluster/defaults/main.yml
+    - ../inventories/example-ocp-hcp/group_vars/all.yml
+  vars:
+    _args: "{{ hosted_cluster_hcp_create_args | join(' ') }}"
+    _lan: "{{ hosted_cluster_pool_start.split('.')[:3] | join('.') }}"
+    _ips: "{{ [hosted_cluster_pool_start, hosted_cluster_pool_end, hosted_cluster_apps_ip] }}"
+    _last: "{{ _ips | map('split', '.') | map('last') | map('int') | list }}"
+    _longhorn: "{{ lookup('file', playbook_dir + '/../roles/hosted_cluster/tasks/longhorn.yml') }}"
+    _mce: "{{ lookup('file', playbook_dir + '/../roles/hosted_cluster/tasks/mce.yml') }}"
+    _cluster: "{{ lookup('file', playbook_dir + '/../roles/hosted_cluster/tasks/cluster.yml') }}"
+    _makefile: "{{ lookup('file', playbook_dir + '/../Makefile') }}"
+    _hc_recipe: "{{ _makefile | regex_search('(?m)^hosted-cluster:[^\\n]*\\n(\\t[^\\n]*\\n?)+') }}"
+    _lh_policy: >-
+      {{ (_longhorn | from_yaml)
+      | selectattr('name', 'defined')
+      | selectattr('name', 'search', 'longhorn-ui-internal')
+      | map('dict2items') | map('selectattr', 'key', 'eq', 'kubernetes.core.k8s')
+      | map('first') | map(attribute='value') | first }}
+    _fetch: "{{ (_mce | from_yaml) | selectattr('block', 'defined') | first }}"
+    _fetch_before_stamp: "{{ _fetch.block[:-1] | to_json }}"
+    _fetch_stamp: "{{ _fetch.block[-1] | to_json }}"
+    _api_last: "{{ hosted_cluster_api_ip.split('.')[3] | int }}"
+    _api_ok: >-
+      {{ hosted_cluster_api_ip.split('.')[:3] | join('.') == _lan
+      and hosted_cluster_pool_start.split('.')[3] | int <= _api_last | int
+      and _api_last | int <= hosted_cluster_pool_end.split('.')[3] | int
+      and hosted_cluster_api_ip != hosted_cluster_apps_ip }}
+    _doc: "{{ lookup('file', playbook_dir + '/../docs/hcp-on-virtualization.md') }}"
+    _structure_script: !unsafe |
+      import json, sys, yaml
+      tasks = yaml.safe_load(open(sys.argv[1]))
+      def walk(ts):
+          for t in ts:
+              yield t
+              for k in ('block', 'rescue', 'always'):
+                  if k in t:
+                      yield from walk(t[k])
+      def leaves(ts):
+          return [t for t in walk(ts) if 'block' not in t]
+      J = json.dumps
+      GUARD = 'hosted_cluster_existing.resources | length == 0'
+      REFS = ('hosted_cluster_rendered', 'hosted_cluster_documents', 'from_yaml_all', '--render-sensitive')
+      ls = leaves(tasks)
+      sens = [t for t in ls if any(r in J(t) for r in REFS)]
+      render = [t for t in ls if '--render-sensitive' in J(t)]
+      patch = [t for t in ls if 'from_yaml_all' in J(t)]
+      applies = [t for t in ls if 'kubernetes.core.k8s' in t and 'hosted_cluster_documents' in J(t)]
+      name = lambda t: t.get('name')
+      out = {'all': J(tasks), 'render': len(render), 'patch': len(patch), 'applies': len(applies),
+             'sens': len(sens),
+             'no_log_missing': [name(t) for t in sens if t.get('no_log') is not True],
+             'unguarded': [name(t) for t in sens if t not in applies and GUARD not in str(t.get('when'))],
+             'apply_loop_unguarded': [name(t) for t in applies if GUARD not in str(t.get('loop'))],
+             'patch_text': J(patch),
+             'tmp': [name(t) for t in ls if 'ansible.builtin.tempfile' in t]}
+      out['dig_api'] = [t for t in ls if t.get('register') == 'hosted_cluster_api_record'
+                        and 'hosted_cluster_api_hostname' in J(t['ansible.builtin.command'])]
+      out['that'] = [str(t['ansible.builtin.assert']['that']) for t in ls if 'ansible.builtin.assert' in t]
+      print(json.dumps(out))
+    _metallb: "{{ lookup('file', playbook_dir + '/../roles/hosted_cluster/tasks/metallb.yml') }}"
+  tasks:
+    - name: The hcp create args carry the intended design
+      ansible.builtin.assert:
+        that:
+          - "'--name hcp' in _args"
+          - "'--base-domain example.com' in _args"
+          - "'--control-plane-availability-policy SingleReplica' in _args"
+          - "'--infra-availability-policy SingleReplica' in _args"
+          - "'--root-volume-access-modes ReadWriteOnce' in _args"
+          - "'--root-volume-volume-mode Block' in _args"
+          - "'--etcd-storage-class longhorn-local' in _args"
+          - "'--root-volume-storage-class longhorn-local' in _args"
+          - "'--vm-node-selector hosted-cluster-host=true' in _args"
+          - "'--node-selector hosted-cluster-host=true' in _args"
+        quiet: true
+
+    - name: Release image is the multi-arch 4.22.17 build
+      ansible.builtin.assert:
+        that: hosted_cluster_release_image is match('.*:4\.22\.17-multi$')
+        quiet: true
+
+    - name: Pool and apps IP sit in the LAN, apps IP in the pool, reserved IPs avoided
+      ansible.builtin.assert:
+        that:
+          - _lan == '192.168.60'
+          - _ips | select('match', '^192\.168\.60\.\d+$') | list | length == 3
+          - _last[0] <= _last[2] and _last[2] <= _last[1]
+          - _api_ok | bool
+          - _last | intersect([179, 180, 181, 182, 183, 184, 185]) | length == 0
+        quiet: true
+
+    - name: A bad API IP is rejected (the apps IP, out of the pool, outside the LAN)
+      ansible.builtin.assert:
+        that: not (_api_ok | bool)
+        quiet: true
+      vars:
+        hosted_cluster_api_ip: "{{ item }}"
+      loop:
+        - "{{ hosted_cluster_apps_ip }}"
+        - 192.168.60.189
+        - 192.168.60.192
+        - 10.0.0.190
+
+    - name: Parse cluster.yml structurally
+      ansible.builtin.command:
+        argv:
+          - "{{ ansible_playbook_python }}"
+          - -I
+          - -c
+          - "{{ _structure_script }}"
+          - "{{ playbook_dir }}/../roles/hosted_cluster/tasks/cluster.yml"
+      register: _struct_raw
+      changed_when: false
+
+    - name: Rendering is private, never on disk, patched from the API hostname
+      vars:
+        _s: "{{ _struct_raw.stdout | from_json }}"
+      ansible.builtin.assert:
+        that:
+          - _s.render == 1
+          - _s.patch == 1
+          # 1. every task touching the rendered data, found by reference, has no_log
+          - _s.no_log_missing == []
+          # 2. no file holds the secrets
+          - "'--render-into' not in _cluster"
+          - "'tempfile' not in _cluster"
+          - "'slurp' not in _cluster"
+          - _s.tmp == []
+          # 3. one apply of the rendered documents, unreachable when the HostedCluster exists
+          - _s.applies == 1
+          - _s.unguarded == []
+          - _s.apply_loop_unguarded == []
+          # 4. the patch is built from the hostname variable; no kas dns flags
+          - "'APIServer' in _s.patch_text"
+          - "'loadBalancer' in _s.patch_text and 'hosted_cluster_api_hostname' in _s.patch_text"
+          - "'--kas-dns-name' not in _s.all"
+          - "'--kas-dns-name' not in _args"
+          - "'kubeAPIServerDNSName' not in _s.all"
+        quiet: true
+
+    - name: Preflight checks both names and post-install asserts server and Service IP
+      vars:
+        _s: "{{ _struct_raw.stdout | from_json }}"
+      ansible.builtin.assert:
+        that:
+          - _s.dig_api | length == 1
+          - _s.that | select('search', 'hosted_cluster_api_record.stdout_lines == \\[hosted_cluster_api_ip\\]') | list | length == 1
+          - _s.that | select('search', 'hosted_cluster_wildcard') | list | length == 1
+          - _s.that | select('search', 'hosted_cluster_api_server == .https://. ~ hosted_cluster_api_hostname ~ .:6443.') | list | length == 1
+          - _s.that | select('search', 'ingress.*== \\[hosted_cluster_api_ip\\]') | list | length == 1
+        quiet: true
+
+    - name: Kubeconfig paths are right
+      ansible.builtin.assert:
+        that:
+          - cluster_name == 'okd4'
+          - hosted_cluster_kubeconfig is match('.*openshift-files/hcp\.example\.com/auth/kubeconfig$')
+        quiet: true
+
+    - name: Longhorn tasks keep best-effort, one replica, no strict-local or migratable
+      ansible.builtin.assert:
+        that:
+          - "'best-effort' in _longhorn"
+          - "'numberOfReplicas: \"1\"' in _longhorn"
+          - "'strict-local' not in _longhorn"
+          - "'migratable' not in _longhorn"
+          - "'label_key }}\":' not in _longhorn"
+        quiet: true
+
+    - name: MCE tasks never disable TLS verification
+      ansible.builtin.assert:
+        that:
+          - "'validate_certs' not in _mce"
+          - "'ca_path' in _mce"
+          - "'https://' in _mce"
+          - "'follow_redirects: none' in _mce"
+        quiet: true
+
+    - name: No task in the role disables TLS verification
+      ansible.builtin.find:
+        paths: "{{ playbook_dir }}/../roles/hosted_cluster"
+        recurse: true
+        contains: '.*validate_certs\s*:\s*(false|no|False)'
+      register: _insecure
+      failed_when: _insecure.matched != 0
+
+    - name: The hosted-cluster recipe runs with umask 077
+      ansible.builtin.assert:
+        that: "'umask 077' in _hc_recipe"
+        quiet: true
+
+    - name: The longhorn-ui-internal NetworkPolicy selects only the UI pods
+      ansible.builtin.assert:
+        that:
+          - _lh_policy.resource_definition.kind == 'NetworkPolicy'
+          - _lh_policy.resource_definition.spec.podSelector.matchLabels.app == 'longhorn-ui'
+        quiet: true
+
+    - name: The hcp fetch is gated on the version stamp and the stamp is written last
+      ansible.builtin.assert:
+        that:
+          - "'hosted_cluster_hcp_stamp is changed' in (_fetch.when | string)"
+          - "'not hosted_cluster_hcp_stat.stat.exists' in (_fetch.when | string)"
+          - "'-xzf' in _fetch_before_stamp"
+          - "'.hcp.version' not in _fetch_before_stamp"
+          - "'.hcp.version' in _fetch_stamp"
+          - "'currentVersion' in _fetch_stamp"
+          - "'hosted_cluster_hcp_url' in _fetch_stamp"
+        quiet: true
+
+    - name: Secrets stay out of logs and files stay private
+      ansible.builtin.assert:
+        that:
+          - "'no_log: true' in _cluster"
+          - "'mode: \"0600\"' in _cluster"
+        quiet: true
+
+    - name: Longhorn has the NetworkPolicy and no Route or oauth proxy
+      ansible.builtin.assert:
+        that:
+          - "'longhorn-ui-internal' in _longhorn"
+          - "'host-network' not in _longhorn"
+          - "'route: \"\"' in _longhorn"
+          - "'oauthProxy' not in _longhorn"
+        quiet: true
+
+    - name: MetalLB operator group selects all namespaces, as its CSV requires
+      ansible.builtin.assert:
+        that: "'targetNamespaces' not in _metallb"
+        quiet: true
+
+    - name: The doc says what this is and nothing about IPI
+      ansible.builtin.assert:
+        that:
+          - _doc is not search('(?i)\\bipi\\b')
+          - _doc is not search('(?i)not\\s+ipi')
+          - "'api.hcp.example.com' in _doc"
+        quiet: true
+
+    - name: Syntax-check the playbook
+      ansible.builtin.command:
+        argv:
+          - ansible-playbook
+          - --syntax-check
+          - -i
+          - "{{ playbook_dir }}/../inventories/example-ocp-hcp"
+          - "{{ playbook_dir }}/../deploy-hosted-cluster.yml"
+      changed_when: false
