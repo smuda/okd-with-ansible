@@ -141,8 +141,8 @@
       apiVersion: operators.coreos.com/v1alpha1
       kind: Subscription
       metadata:
-#        labels:
-#          operators.coreos.com/argocd-operator.openshift-operators: ""
+        # labels:
+        #   operators.coreos.com/argocd-operator.openshift-operators: ""
         name: "{{ argocd_operator }}"
         namespace: "{{ argocd_operator_selected.namespace }}"
       spec:
