@@ -1,0 +1,70 @@
+---
+hosted_cluster_name: hcp
+hosted_cluster_base_domain: example.com
+hosted_cluster_namespace: clusters
+hosted_cluster_node: worker2.okd4.example.com
+hosted_cluster_node_label_key: hosted-cluster-host
+hosted_cluster_release_version: "4.22.17"
+hosted_cluster_release_image: quay.io/openshift-release-dev/ocp-release:{{ hosted_cluster_release_version }}-multi
+hosted_cluster_channel: "stable-{{ (hosted_cluster_release_version | split('.'))[:2] | join('.') }}"
+hosted_cluster_replicas: 2
+hosted_cluster_cores: 2
+hosted_cluster_memory: 8Gi
+hosted_cluster_root_volume_size: 64
+hosted_cluster_storage_class: longhorn-local
+
+# MetalLB L2 pool: the API gets the lowest free address, apps is pinned
+hosted_cluster_pool_start: 192.168.60.190
+hosted_cluster_pool_end: 192.168.60.191
+hosted_cluster_api_ip: 192.168.60.190
+hosted_cluster_api_hostname: "api.{{ hosted_cluster_name }}.{{ hosted_cluster_base_domain }}"
+hosted_cluster_apps_ip: 192.168.60.191
+
+hosted_cluster_pull_secret_file: "{{ playbook_dir }}/openshift-files/{{ hosted_cluster_name }}.{{ hosted_cluster_base_domain }}/pull-secret"
+hosted_cluster_ssh_public_key_file: ~/.ssh/id_ansible.pub
+hosted_cluster_kubeconfig: "{{ playbook_dir }}/openshift-files/{{ hosted_cluster_name }}.{{ hosted_cluster_base_domain }}/auth/kubeconfig"
+hosted_cluster_hcp_executable: "{{ openshift_client_directory }}/hcp"
+
+longhorn_chart_version: 1.13.0
+longhorn_node_tag: hcp
+longhorn_namespace: longhorn-system
+mce_channel: stable-2.17
+
+# One token per item so it can be asserted on
+hosted_cluster_hcp_create_args:
+  - --name
+  - "{{ hosted_cluster_name }}"
+  - --namespace
+  - "{{ hosted_cluster_namespace }}"
+  - --base-domain
+  - "{{ hosted_cluster_base_domain }}"
+  - --release-image
+  - "{{ hosted_cluster_release_image }}"
+  - --pull-secret
+  - "{{ hosted_cluster_pull_secret_file }}"
+  - --ssh-key
+  - "{{ hosted_cluster_ssh_public_key_file | expanduser }}"
+  - --control-plane-availability-policy
+  - SingleReplica
+  - --infra-availability-policy
+  - SingleReplica
+  - --node-selector
+  - "{{ hosted_cluster_node_label_key }}=true"
+  - --vm-node-selector
+  - "{{ hosted_cluster_node_label_key }}=true"
+  - --node-pool-replicas
+  - "{{ hosted_cluster_replicas }}"
+  - --memory
+  - "{{ hosted_cluster_memory }}"
+  - --cores
+  - "{{ hosted_cluster_cores }}"
+  - --root-volume-size
+  - "{{ hosted_cluster_root_volume_size }}"
+  - --etcd-storage-class
+  - "{{ hosted_cluster_storage_class }}"
+  - --root-volume-storage-class
+  - "{{ hosted_cluster_storage_class }}"
+  - --root-volume-access-modes
+  - ReadWriteOnce
+  - --root-volume-volume-mode
+  - Block

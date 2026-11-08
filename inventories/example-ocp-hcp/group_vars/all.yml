@@ -1,0 +1,33 @@
+---
+# These name the management cluster, so openshift_files_kubeconfig from
+# local_path_definitions resolves to its kubeconfig.
+cluster_name: okd4
+base_domain: example.com
+
+# The hosted cluster is reachable as <name>.<base domain>
+hosted_cluster_name: hcp
+hosted_cluster_base_domain: example.com
+hosted_cluster_node: worker2.okd4.example.com
+hosted_cluster_pool_start: 192.168.60.190
+hosted_cluster_pool_end: 192.168.60.191
+hosted_cluster_api_ip: 192.168.60.190
+hosted_cluster_apps_ip: 192.168.60.191
+hosted_cluster_release_version: "4.22.17"
+
+# The pull secret handling of create_local_files, for the hosted cluster
+opt_out_of_remote_health_reporting: true
+use_disconnected_registry: false
+
+# Post-install configuration, as in example-ocp
+okd_disable_default_operator_catalog_sources: false
+okd_disable_community_operators: false
+okd_disable_redhat_operators: false
+
+argocd: true
+argocd_value_file: values-hcp.yaml
+argocd_repository: https://github.com/smuda/home-cluster-argo.git
+argocd_repository_revision: main
+argocd_sync_wave_delay: 60
+
+sealed_secrets: true
+sealed_secret_secret: "{{ playbook_dir }}/sealed-secrets-secret.yml"

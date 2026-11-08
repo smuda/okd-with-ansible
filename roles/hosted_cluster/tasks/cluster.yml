@@ -1,0 +1,282 @@
+---
+- name: Resolve a name in the apps domain of the hosted cluster
+  ansible.builtin.command:
+    argv:
+      - dig
+      - +short
+      - "foo.apps.{{ hosted_cluster_name }}.{{ hosted_cluster_base_domain }}"
+  register: hosted_cluster_wildcard
+  changed_when: false
+
+- name: Assert the apps wildcard points at the MetalLB address
+  ansible.builtin.assert:
+    that: hosted_cluster_wildcard.stdout_lines == [hosted_cluster_apps_ip]
+    fail_msg: >-
+      *.apps.{{ hosted_cluster_name }}.{{ hosted_cluster_base_domain }} must
+      resolve to {{ hosted_cluster_apps_ip }}. Add the wildcard record as
+      described in docs/hcp-on-virtualization.md, step 3.
+
+- name: Resolve the API name of the hosted cluster
+  ansible.builtin.command:
+    argv:
+      - dig
+      - +short
+      - "{{ hosted_cluster_api_hostname }}"
+  register: hosted_cluster_api_record
+  changed_when: false
+
+- name: Assert the API name points at the MetalLB address
+  ansible.builtin.assert:
+    that: hosted_cluster_api_record.stdout_lines == [hosted_cluster_api_ip]
+    fail_msg: >-
+      {{ hosted_cluster_api_hostname }} must resolve to
+      {{ hosted_cluster_api_ip }}. Add the record as described in
+      docs/hcp-on-virtualization.md, step 3.
+
+# Included as tasks rather than as the role: the role's dependencies
+# validate the inventory of a bare metal install. cluster_name selects the
+# hosted cluster's directory for openshift_files_directory.
+- name: Create the pull secret of the hosted cluster
+  ansible.builtin.include_tasks: ../../create_local_files/tasks/pull-secret.yml
+  vars:
+    cluster_name: "{{ hosted_cluster_name }}"
+    base_domain: "{{ hosted_cluster_base_domain }}"
+
+- name: Look for the HostedCluster
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ openshift_files_kubeconfig }}"
+    api_version: hypershift.openshift.io/v1beta1
+    kind: HostedCluster
+    name: "{{ hosted_cluster_name }}"
+    namespace: "{{ hosted_cluster_namespace }}"
+  register: hosted_cluster_existing
+
+- name: Update the pull secret and channel of the existing HostedCluster
+  when: hosted_cluster_existing.resources | length == 1
+  block:
+    - name: Update the pull secret
+      kubernetes.core.k8s:
+        kubeconfig: "{{ openshift_files_kubeconfig }}"
+        api_version: v1
+        kind: Secret
+        name: "{{ hosted_cluster_existing.resources[0].spec.pullSecret.name }}"
+        namespace: "{{ hosted_cluster_namespace }}"
+        merge_type: merge
+        definition:
+          data:
+            .dockerconfigjson: "{{ lookup('file', hosted_cluster_pull_secret_file, rstrip=false) | b64encode }}"
+      no_log: true
+
+    - name: Set the update channel
+      kubernetes.core.k8s:
+        kubeconfig: "{{ openshift_files_kubeconfig }}"
+        api_version: hypershift.openshift.io/v1beta1
+        kind: HostedCluster
+        name: "{{ hosted_cluster_name }}"
+        namespace: "{{ hosted_cluster_namespace }}"
+        merge_type: merge
+        definition:
+          spec:
+            channel: "{{ hosted_cluster_channel }}"
+
+# The hcp CLI has no flag for the API hostname and `services` is immutable,
+# so the rendered manifests are patched before they are applied. They are
+# read from stdout and never written to disk: the render holds the pull
+# secret, the SSH key and the etcd encryption key.
+- name: Render the HostedCluster manifests
+  ansible.builtin.command:
+    argv: >-
+      {{ [hosted_cluster_hcp_executable, 'create', 'cluster', 'kubevirt']
+      + hosted_cluster_hcp_create_args
+      + ['--render', '--render-sensitive'] }}
+  environment:
+    KUBECONFIG: "{{ openshift_files_kubeconfig }}"
+  register: hosted_cluster_rendered
+  when: hosted_cluster_existing.resources | length == 0
+  changed_when: false
+  no_log: true
+
+- name: Set the API server hostname in the rendered HostedCluster
+  ansible.builtin.set_fact:
+    hosted_cluster_documents: >-
+      {% set ns = namespace(out=[], hc=0, svc=0) %}
+      {% for d in hosted_cluster_rendered.stdout | from_yaml_all | select | list %}
+      {% if d.kind == 'HostedCluster' %}
+      {% set ns.hc = ns.hc + 1 %}
+      {% set services = [] %}
+      {% for s in d.spec.services %}
+      {% if s.service == 'APIServer' %}
+      {% set ns.svc = ns.svc + 1 %}
+      {% set _ = services.append({'service': 'APIServer', 'servicePublishingStrategy': {'type': 'LoadBalancer', 'loadBalancer': {'hostname': hosted_cluster_api_hostname}}}) %}
+      {% else %}
+      {% set _ = services.append(s) %}
+      {% endif %}
+      {% endfor %}
+      {% set _ = ns.out.append(d | combine({'spec': {'services': services, 'channel': hosted_cluster_channel}}, recursive=true)) %}
+      {% else %}
+      {% set _ = ns.out.append(d) %}
+      {% endif %}
+      {% endfor %}
+      {{ {'docs': ns.out, 'hc': ns.hc, 'svc': ns.svc} | to_json }}
+  when: hosted_cluster_existing.resources | length == 0
+  no_log: true
+
+- name: Assert the HostedCluster and its APIServer service were found
+  ansible.builtin.assert:
+    that:
+      - (hosted_cluster_documents | from_json).hc == 1
+      - (hosted_cluster_documents | from_json).svc == 1
+    fail_msg: The rendered manifests have no HostedCluster with an APIServer service.
+  when: hosted_cluster_existing.resources | length == 0
+  no_log: true
+
+- name: Apply the manifests
+  kubernetes.core.k8s:
+    kubeconfig: "{{ openshift_files_kubeconfig }}"
+    definition: "{{ item }}"
+  loop: "{{ (hosted_cluster_documents | from_json).docs if hosted_cluster_existing.resources | length == 0 else [] }}"
+  loop_control:
+    label: "{{ item.kind }}"
+  no_log: true
+
+- name: Wait for the HostedCluster to be available
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ openshift_files_kubeconfig }}"
+    api_version: hypershift.openshift.io/v1beta1
+    kind: HostedCluster
+    name: "{{ hosted_cluster_name }}"
+    namespace: "{{ hosted_cluster_namespace }}"
+  register: hosted_cluster_status
+  retries: 180
+  delay: 10
+  until: >-
+    hosted_cluster_status.resources | length == 1
+    and (hosted_cluster_status.resources[0].status.conditions | default([])
+    | selectattr('type', 'eq', 'Available') | selectattr('status', 'eq', 'True') | list | length) == 1
+
+- name: Read the hosted cluster admin kubeconfig
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ openshift_files_kubeconfig }}"
+    api_version: v1
+    kind: Secret
+    name: "{{ hosted_cluster_name }}-admin-kubeconfig"
+    namespace: "{{ hosted_cluster_namespace }}"
+  register: hosted_cluster_admin_kubeconfig
+  no_log: true
+  failed_when: hosted_cluster_admin_kubeconfig.resources | length != 1
+
+- name: Create the directory for the hosted cluster kubeconfig
+  ansible.builtin.file:
+    path: "{{ hosted_cluster_kubeconfig | dirname }}"
+    state: directory
+    mode: "0700"
+
+- name: Write the hosted cluster kubeconfig
+  ansible.builtin.copy:
+    content: "{{ hosted_cluster_admin_kubeconfig.resources[0].data.kubeconfig | b64decode }}"
+    dest: "{{ hosted_cluster_kubeconfig }}"
+    mode: "0600"
+  no_log: true
+
+- name: Wait for all NodePool replicas to be ready
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ openshift_files_kubeconfig }}"
+    api_version: hypershift.openshift.io/v1beta1
+    kind: NodePool
+    name: "{{ hosted_cluster_name }}"
+    namespace: "{{ hosted_cluster_namespace }}"
+  register: hosted_cluster_nodepool
+  retries: 270
+  delay: 10
+  until: >-
+    hosted_cluster_nodepool.resources | length == 1
+    and hosted_cluster_nodepool.resources[0].status.replicas | default(0)
+    == hosted_cluster_nodepool.resources[0].spec.replicas
+
+- name: Read the ingress router NodePort service in the hosted cluster
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ hosted_cluster_kubeconfig }}"
+    api_version: v1
+    kind: Service
+    name: router-nodeport-default
+    namespace: openshift-ingress
+  register: hosted_cluster_router
+  retries: 180
+  delay: 10
+  until: >-
+    hosted_cluster_router.resources | length == 1
+    and (hosted_cluster_router.resources[0].spec.ports
+    | selectattr('name', 'in', ['http', 'https']) | selectattr('nodePort', 'defined') | list | length) == 2
+
+- name: Create or update the apps LoadBalancer service
+  kubernetes.core.k8s:
+    kubeconfig: "{{ openshift_files_kubeconfig }}"
+    server_side_apply:
+      field_manager: ansible
+    resource_definition:
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: "{{ hosted_cluster_name }}-apps"
+        namespace: clusters-{{ hosted_cluster_name }}
+        labels:
+          app: "{{ hosted_cluster_name }}"
+        annotations:
+          metallb.io/loadBalancerIPs: "{{ hosted_cluster_apps_ip }}"
+      spec:
+        type: LoadBalancer
+        selector:
+          kubevirt.io: virt-launcher
+        ports:
+          - name: https-443
+            port: 443
+            protocol: TCP
+            targetPort: "{{ (hosted_cluster_router.resources[0].spec.ports | selectattr('name', 'eq', 'https') | first).nodePort | int }}"
+          - name: http-80
+            port: 80
+            protocol: TCP
+            targetPort: "{{ (hosted_cluster_router.resources[0].spec.ports | selectattr('name', 'eq', 'http') | first).nodePort | int }}"
+
+- name: Wait for the hosted cluster version to be completed
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ openshift_files_kubeconfig }}"
+    api_version: hypershift.openshift.io/v1beta1
+    kind: HostedCluster
+    name: "{{ hosted_cluster_name }}"
+    namespace: "{{ hosted_cluster_namespace }}"
+  register: hosted_cluster_version
+  retries: 540
+  delay: 10
+  until: >-
+    hosted_cluster_version.resources | length == 1
+    and (hosted_cluster_version.resources[0].status.version.history | default([{}]))[0].state | default('')
+    == 'Completed'
+
+- name: Read the hosted cluster API server URL
+  ansible.builtin.set_fact:
+    hosted_cluster_api_server: "{{ (lookup('file', hosted_cluster_kubeconfig) | from_yaml).clusters[0].cluster.server }}"
+  no_log: true
+
+- name: Read the kube-apiserver service of the hosted cluster
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ openshift_files_kubeconfig }}"
+    api_version: v1
+    kind: Service
+    name: kube-apiserver
+    namespace: clusters-{{ hosted_cluster_name }}
+  register: hosted_cluster_kas_service
+
+- name: Assert the API is reached by name on the intended address
+  ansible.builtin.assert:
+    that:
+      - hosted_cluster_api_server == 'https://' ~ hosted_cluster_api_hostname ~ ':6443'
+      - (hosted_cluster_kas_service.resources[0].status.loadBalancer.ingress | default([]) | map(attribute='ip') | list) == [hosted_cluster_api_ip]
+    fail_msg: >-
+      The API server must be https://{{ hosted_cluster_api_hostname }}:6443
+      on {{ hosted_cluster_api_ip }}.
+
+- name: Show the hosted cluster URLs
+  ansible.builtin.debug:
+    msg:
+      - "API: {{ hosted_cluster_api_server }}"
+      - "Console: https://console-openshift-console.apps.{{ hosted_cluster_name }}.{{ hosted_cluster_base_domain }}"

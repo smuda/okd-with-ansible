@@ -1,0 +1,102 @@
+---
+- name: Create or update namespace metallb-system
+  kubernetes.core.k8s:
+    kubeconfig: "{{ openshift_files_kubeconfig }}"
+    server_side_apply:
+      field_manager: ansible
+    resource_definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: metallb-system
+
+# No target namespaces: the MetalLB CSV only supports AllNamespaces
+- name: Create or update the MetalLB operator group
+  kubernetes.core.k8s:
+    kubeconfig: "{{ openshift_files_kubeconfig }}"
+    server_side_apply:
+      field_manager: ansible
+    resource_definition:
+      apiVersion: operators.coreos.com/v1
+      kind: OperatorGroup
+      metadata:
+        name: metallb-operator
+        namespace: metallb-system
+
+- name: Create or update the MetalLB subscription
+  kubernetes.core.k8s:
+    kubeconfig: "{{ openshift_files_kubeconfig }}"
+    server_side_apply:
+      field_manager: ansible
+    resource_definition:
+      apiVersion: operators.coreos.com/v1alpha1
+      kind: Subscription
+      metadata:
+        name: metallb-operator
+        namespace: metallb-system
+      spec:
+        channel: stable
+        installPlanApproval: Automatic
+        name: metallb-operator
+        source: redhat-operators
+        sourceNamespace: openshift-marketplace
+
+- name: Wait for MetalLB to be installed
+  ansible.builtin.include_tasks: wait-csv.yml
+  vars:
+    csv_namespace: metallb-system
+    csv_prefix: metallb-operator
+
+- name: Create or update the MetalLB instance
+  kubernetes.core.k8s:
+    kubeconfig: "{{ openshift_files_kubeconfig }}"
+    server_side_apply:
+      field_manager: ansible
+    resource_definition:
+      apiVersion: metallb.io/v1beta1
+      kind: MetalLB
+      metadata:
+        name: metallb
+        namespace: metallb-system
+  register: hosted_cluster_metallb
+  retries: 30
+  delay: 10
+  until: hosted_cluster_metallb is succeeded
+
+# The webhook may not answer right after the MetalLB instance is created
+- name: Create or update the IPAddressPool hosted-cluster
+  kubernetes.core.k8s:
+    kubeconfig: "{{ openshift_files_kubeconfig }}"
+    server_side_apply:
+      field_manager: ansible
+    resource_definition:
+      apiVersion: metallb.io/v1beta1
+      kind: IPAddressPool
+      metadata:
+        name: hosted-cluster
+        namespace: metallb-system
+      spec:
+        addresses:
+          - "{{ hosted_cluster_pool_start }}-{{ hosted_cluster_pool_end }}"
+        serviceAllocation:
+          namespaces:
+            - "clusters-{{ hosted_cluster_name }}"
+  register: hosted_cluster_pool
+  retries: 30
+  delay: 10
+  until: hosted_cluster_pool is succeeded
+
+- name: Create or update the L2Advertisement hosted-cluster
+  kubernetes.core.k8s:
+    kubeconfig: "{{ openshift_files_kubeconfig }}"
+    server_side_apply:
+      field_manager: ansible
+    resource_definition:
+      apiVersion: metallb.io/v1beta1
+      kind: L2Advertisement
+      metadata:
+        name: hosted-cluster
+        namespace: metallb-system
+      spec:
+        ipAddressPools:
+          - hosted-cluster

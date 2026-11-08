@@ -1,0 +1,17 @@
+---
+# Expects csv_namespace and csv_prefix
+- name: Wait for the ClusterServiceVersion to succeed for {{ csv_prefix }}
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ openshift_files_kubeconfig }}"
+    api_version: operators.coreos.com/v1alpha1
+    kind: ClusterServiceVersion
+    namespace: "{{ csv_namespace }}"
+  register: hosted_cluster_csv
+  retries: 120
+  delay: 10
+  until: >-
+    hosted_cluster_csv.resources
+    | selectattr('metadata.name', 'match', '^' ~ csv_prefix)
+    | selectattr('status.phase', 'defined')
+    | selectattr('status.phase', 'eq', 'Succeeded')
+    | list | length > 0

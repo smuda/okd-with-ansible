@@ -137,8 +137,46 @@ the hostname `registry.okd4.example.com` needs to be setup in DNS.
    | master3.okd4.example.com	    | 192.168.60.183                 |
    | worker1.okd4.example.com       | 192.168.60.184                 |
 
-   If you're using pihole (as I do), increase rate limiting, create `/etc/dnsmasq.d/99-openshift.conf`
-   with the following content and restart dns (`pihole reloaddns`)
+   This table fits an external load balancer. With [OpenShift's internal
+   load balancer](#using-openshifts-internal-load-balancer), the API and
+   ingress VIPs are separate addresses, so point these names at the VIPs
+   instead of at `infra1`:
+
+   | hostname                 | Address        |
+   |--------------------------|----------------|
+   | api-int.okd4.example.com | 192.168.60.178 |
+   | api.okd4.example.com     | 192.168.60.178 |
+   | apps.okd4.example.com    | 192.168.60.179 |
+   | *.apps.okd4.example.com  | 192.168.60.179 |
+
+   If you're using pihole (as I do), increase rate limiting and add a
+   wildcard for `*.apps`, using the address from the table that fits
+   your load balancer. The examples below use the external load
+   balancer's address, `192.168.60.180`. With the internal load
+   balancer, use the ingress VIP instead.
+
+   Pi-hole 6 does not read `/etc/dnsmasq.d` while `misc.etc_dnsmasq_d`
+   is false, and there is no error. Add the wildcard to
+   `misc.dnsmasq_lines` instead. The new value replaces the whole list,
+   so include your existing entries. Use `sudo` to list them, because
+   without it you may see `[]` even when entries exist.
+
+   ```shell
+   sudo pihole-FTL --config misc.dnsmasq_lines
+   sudo cp -p /etc/pihole/pihole.toml /etc/pihole/pihole.toml.bak
+   sudo pihole-FTL --config misc.dnsmasq_lines \
+     '["<existing entries>",
+       "address=/.apps.okd4.example.com/192.168.60.180"]'
+   dig +short foo.apps.okd4.example.com
+   ```
+
+   The last command must print the wildcard's address. Setting
+   `misc.etc_dnsmasq_d` to true is an alternative, but it has not been
+   tested.
+
+   Before Pi-hole 6, create `/etc/dnsmasq.d/99-openshift.conf` with the
+   following content and restart dns (`pihole reloaddns`):
+
    ```
    address=/.apps.okd4.example.com/192.168.60.180
    ```
@@ -323,6 +361,19 @@ Workers register automatically — no manual `oc` enrollment
 or certificate approval is needed.
 
 See `inventories/example-ocp-agent` for a complete example.
+
+## Hosted cluster
+
+See [docs/hcp-on-virtualization.md](docs/hcp-on-virtualization.md)
+for a hosted cluster on OpenShift Virtualization. Its console
+login is `kubeadmin`, with the password in a Secret on the
+management cluster:
+
+```shell
+KUBECONFIG=openshift-files/okd4.example.com/auth/kubeconfig \
+  oc extract secret/hcp-kubeadmin-password -n clusters \
+  --keys=password --to=-
+```
 
 ## Wiping cluster nodes
 
