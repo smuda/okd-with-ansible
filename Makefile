@@ -131,6 +131,14 @@ cluster-masters: env-check
 cluster-config: env-check
 	ansible-playbook ${ANSIBLE_EXTRA_ARGS} -i inventories/${CLUSTER_NAME} -v configure-cluster.yml
 
+.PHONY: hosted-cluster
+hosted-cluster: env-check
+	set -o pipefail; umask 077; ansible-playbook ${ANSIBLE_EXTRA_ARGS} -i inventories/${CLUSTER_NAME} -v deploy-hosted-cluster.yml 2>&1 | tee install-$$(date +%s).log
+
+.PHONY: hosted-cluster-test
+hosted-cluster-test:
+	ansible-playbook -i inventories/example-ocp-hcp tests/hosted_cluster_config.yml
+
 .PHONY: wipe-nodes
 wipe-nodes: env-check
 	ansible-playbook ${ANSIBLE_EXTRA_ARGS} -i inventories/${CLUSTER_NAME} -v wipe-nodes.yml

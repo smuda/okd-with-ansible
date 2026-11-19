@@ -1,0 +1,83 @@
+---
+- name: Create or update namespace openshift-cnv
+  kubernetes.core.k8s:
+    kubeconfig: "{{ openshift_files_kubeconfig }}"
+    server_side_apply:
+      field_manager: ansible
+    resource_definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: openshift-cnv
+
+- name: Create or update the OpenShift Virtualization operator group
+  kubernetes.core.k8s:
+    kubeconfig: "{{ openshift_files_kubeconfig }}"
+    server_side_apply:
+      field_manager: ansible
+    resource_definition:
+      apiVersion: operators.coreos.com/v1
+      kind: OperatorGroup
+      metadata:
+        name: kubevirt-hyperconverged-group
+        namespace: openshift-cnv
+      spec:
+        targetNamespaces:
+          - openshift-cnv
+
+- name: Create or update the OpenShift Virtualization subscription
+  kubernetes.core.k8s:
+    kubeconfig: "{{ openshift_files_kubeconfig }}"
+    server_side_apply:
+      field_manager: ansible
+    resource_definition:
+      apiVersion: operators.coreos.com/v1alpha1
+      kind: Subscription
+      metadata:
+        name: hco-operatorhub
+        namespace: openshift-cnv
+      spec:
+        channel: stable
+        installPlanApproval: Automatic
+        name: kubevirt-hyperconverged
+        source: redhat-operators
+        sourceNamespace: openshift-marketplace
+
+- name: Wait for OpenShift Virtualization to be installed
+  ansible.builtin.include_tasks: wait-csv.yml
+  vars:
+    csv_namespace: openshift-cnv
+    csv_prefix: kubevirt-hyperconverged-operator
+
+# The CRD can appear a little after the CSV succeeds
+- name: Create or update the HyperConverged resource
+  kubernetes.core.k8s:
+    kubeconfig: "{{ openshift_files_kubeconfig }}"
+    server_side_apply:
+      field_manager: ansible
+    resource_definition:
+      apiVersion: hco.kubevirt.io/v1beta1
+      kind: HyperConverged
+      metadata:
+        name: kubevirt-hyperconverged
+        namespace: openshift-cnv
+      spec: {}
+  register: hosted_cluster_hco
+  retries: 30
+  delay: 10
+  until: hosted_cluster_hco is succeeded
+
+- name: Wait for HyperConverged to be available
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ openshift_files_kubeconfig }}"
+    api_version: hco.kubevirt.io/v1beta1
+    kind: HyperConverged
+    name: kubevirt-hyperconverged
+    namespace: openshift-cnv
+  register: hosted_cluster_hco_status
+  retries: 120
+  delay: 15
+  until: >-
+    hosted_cluster_hco_status.resources | length == 1
+    and (hosted_cluster_hco_status.resources[0].status.conditions | default([])
+    | selectattr('type', 'eq', 'Available') | selectattr('status', 'eq', 'True') | list | length) == 1

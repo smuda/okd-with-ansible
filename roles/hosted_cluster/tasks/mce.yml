@@ -1,0 +1,256 @@
+---
+- name: Create or update namespace multicluster-engine
+  kubernetes.core.k8s:
+    kubeconfig: "{{ openshift_files_kubeconfig }}"
+    server_side_apply:
+      field_manager: ansible
+    resource_definition:
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: multicluster-engine
+
+- name: Create or update the multicluster engine operator group
+  kubernetes.core.k8s:
+    kubeconfig: "{{ openshift_files_kubeconfig }}"
+    server_side_apply:
+      field_manager: ansible
+    resource_definition:
+      apiVersion: operators.coreos.com/v1
+      kind: OperatorGroup
+      metadata:
+        name: multicluster-engine
+        namespace: multicluster-engine
+      spec:
+        targetNamespaces:
+          - multicluster-engine
+
+- name: Create or update the multicluster engine subscription
+  kubernetes.core.k8s:
+    kubeconfig: "{{ openshift_files_kubeconfig }}"
+    server_side_apply:
+      field_manager: ansible
+    resource_definition:
+      apiVersion: operators.coreos.com/v1alpha1
+      kind: Subscription
+      metadata:
+        name: multicluster-engine
+        namespace: multicluster-engine
+      spec:
+        channel: "{{ mce_channel }}"
+        installPlanApproval: Automatic
+        name: multicluster-engine
+        source: redhat-operators
+        sourceNamespace: openshift-marketplace
+
+- name: Wait for the multicluster engine operator to be installed
+  ansible.builtin.include_tasks: wait-csv.yml
+  vars:
+    csv_namespace: multicluster-engine
+    csv_prefix: multicluster-engine
+
+- name: Create or update the MultiClusterEngine
+  kubernetes.core.k8s:
+    kubeconfig: "{{ openshift_files_kubeconfig }}"
+    server_side_apply:
+      field_manager: ansible
+    resource_definition:
+      apiVersion: multicluster.openshift.io/v1
+      kind: MultiClusterEngine
+      metadata:
+        name: multiclusterengine
+      spec:
+        availabilityConfig: Basic
+  register: hosted_cluster_mce
+  retries: 30
+  delay: 10
+  until: hosted_cluster_mce is succeeded
+
+- name: Wait for the MultiClusterEngine to be available
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ openshift_files_kubeconfig }}"
+    api_version: multicluster.openshift.io/v1
+    kind: MultiClusterEngine
+    name: multiclusterengine
+  register: hosted_cluster_mce_status
+  retries: 120
+  delay: 15
+  until: >-
+    hosted_cluster_mce_status.resources | length == 1
+    and hosted_cluster_mce_status.resources[0].status.phase | default('') == 'Available'
+
+- name: Wait for the HyperShift operator to be available
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ openshift_files_kubeconfig }}"
+    api_version: apps/v1
+    kind: Deployment
+    name: operator
+    namespace: hypershift
+  register: hosted_cluster_hypershift
+  retries: 120
+  delay: 15
+  until: >-
+    hosted_cluster_hypershift.resources | length == 1
+    and (hosted_cluster_hypershift.resources[0].status.conditions | default([])
+    | selectattr('type', 'eq', 'Available') | selectattr('status', 'eq', 'True') | list | length) == 1
+
+# Hosted clusters need wildcard routes for their apps domain
+- name: Allow wildcard routes in the default IngressController
+  kubernetes.core.k8s:
+    kubeconfig: "{{ openshift_files_kubeconfig }}"
+    server_side_apply:
+      field_manager: ansible
+      force_conflicts: true
+    resource_definition:
+      apiVersion: operator.openshift.io/v1
+      kind: IngressController
+      metadata:
+        name: default
+        namespace: openshift-ingress-operator
+      spec:
+        routeAdmission:
+          wildcardPolicy: WildcardsAllowed
+
+- name: Read the hcp ConsoleCLIDownload
+  kubernetes.core.k8s_info:
+    kubeconfig: "{{ openshift_files_kubeconfig }}"
+    api_version: console.openshift.io/v1
+    kind: ConsoleCLIDownload
+    name: hcp-cli-download
+  register: hosted_cluster_hcp_download
+  failed_when: hosted_cluster_hcp_download.resources | length != 1
+
+- name: Pick the hcp download for this machine
+  ansible.builtin.set_fact:
+    hosted_cluster_hcp_url: >-
+      {{ hosted_cluster_hcp_download.resources[0].spec.links
+      | map(attribute='href')
+      | select('search', '(?i)' ~ hosted_cluster_hcp_os[ansible_system])
+      | select('search', '(?i)' ~ hosted_cluster_hcp_arch[ansible_architecture])
+      | first }}
+  vars:
+    hosted_cluster_hcp_os:
+      Darwin: (mac|darwin)
+      Linux: linux
+    hosted_cluster_hcp_arch:
+      arm64: (arm64|aarch64)
+      aarch64: (arm64|aarch64)
+      x86_64: (amd64|x86_64)
+
+- name: Assert the hcp download uses https
+  ansible.builtin.assert:
+    that: hosted_cluster_hcp_url is match('^https://')
+    fail_msg: "Refusing to download hcp from {{ hosted_cluster_hcp_url }}"
+    quiet: true
+
+# The download URL has no version in it, so the stamp also holds the
+# MultiClusterEngine version to notice hcp updates.
+- name: Assert the MultiClusterEngine reports a version
+  ansible.builtin.assert:
+    that: hosted_cluster_mce_status.resources[0].status.currentVersion | default('') | length > 0
+    fail_msg: The MultiClusterEngine does not report status.currentVersion
+    quiet: true
+
+- name: Compare the hcp version stamp
+  ansible.builtin.copy:
+    content: "{{ hosted_cluster_mce_status.resources[0].status.currentVersion }} {{ hosted_cluster_hcp_url }}\n"
+    dest: "{{ openshift_client_directory }}/.hcp.version"
+    mode: "0644"
+  check_mode: true
+  register: hosted_cluster_hcp_stamp
+
+- name: Check for the hcp executable
+  ansible.builtin.stat:
+    path: "{{ hosted_cluster_hcp_executable }}"
+  register: hosted_cluster_hcp_stat
+
+- name: Fetch the hcp executable
+  when: hosted_cluster_hcp_stamp is changed or not hosted_cluster_hcp_stat.stat.exists
+  block:
+    - name: Read the ingress CA bundle
+      kubernetes.core.k8s_info:
+        kubeconfig: "{{ openshift_files_kubeconfig }}"
+        api_version: v1
+        kind: ConfigMap
+        name: default-ingress-cert
+        namespace: openshift-config-managed
+      register: hosted_cluster_ingress_ca
+      failed_when: hosted_cluster_ingress_ca.resources | length != 1
+
+    - name: Write the ingress CA bundle
+      ansible.builtin.copy:
+        content: "{{ hosted_cluster_ingress_ca.resources[0].data['ca-bundle.crt'] }}"
+        dest: "{{ openshift_files_directory }}/ingress-ca.crt"
+        mode: "0644"
+
+    - name: Download the hcp archive
+      ansible.builtin.uri:
+        url: "{{ hosted_cluster_hcp_url }}"
+        dest: "{{ openshift_client_directory }}/hcp.tar.gz"
+        ca_path: "{{ openshift_files_directory }}/ingress-ca.crt"
+        force: true
+        follow_redirects: none
+        mode: "0644"
+      changed_when: false
+
+    - name: List the hcp archive
+      ansible.builtin.command:
+        argv:
+          - tar
+          - -tzf
+          - "{{ openshift_client_directory }}/hcp.tar.gz"
+      register: hosted_cluster_hcp_members
+      changed_when: false
+
+    - name: Find the hcp member in the archive
+      ansible.builtin.set_fact:
+        hosted_cluster_hcp_member: "{{ hosted_cluster_hcp_members.stdout_lines | intersect(['hcp', './hcp']) | first }}"
+      failed_when: hosted_cluster_hcp_members.stdout_lines | intersect(['hcp', './hcp']) | length == 0
+
+    - name: Create a temporary directory for the hcp extract
+      ansible.builtin.tempfile:
+        state: directory
+        path: "{{ openshift_client_directory }}"
+        prefix: hcp-extract.
+      register: hosted_cluster_hcp_tmp
+
+    - name: Install the hcp executable
+      block:
+        # As we're running on mac, we can't use unarchive as it requires GNU tar.
+        - name: Extract the hcp executable
+          ansible.builtin.command:
+            argv:
+              - tar
+              - -xzf
+              - "{{ openshift_client_directory }}/hcp.tar.gz"
+              - -C
+              - "{{ hosted_cluster_hcp_tmp.path }}"
+              - "{{ hosted_cluster_hcp_member }}"
+          changed_when: false
+
+        - name: Make the extracted hcp executable executable
+          ansible.builtin.file:
+            path: "{{ hosted_cluster_hcp_tmp.path }}/{{ hosted_cluster_hcp_member }}"
+            mode: "0755"
+
+        # A single rename, so an interrupted extract never leaves a truncated hcp.
+        - name: Move the hcp executable into place
+          ansible.builtin.command:
+            argv:
+              - mv
+              - -f
+              - "{{ hosted_cluster_hcp_tmp.path }}/{{ hosted_cluster_hcp_member }}"
+              - "{{ hosted_cluster_hcp_executable }}"
+          changed_when: true
+      always:
+        - name: Remove the temporary hcp extract directory
+          ansible.builtin.file:
+            path: "{{ hosted_cluster_hcp_tmp.path }}"
+            state: absent
+
+    # Last, so a failed fetch is retried on the next run.
+    - name: Record the hcp version stamp
+      ansible.builtin.copy:
+        content: "{{ hosted_cluster_mce_status.resources[0].status.currentVersion }} {{ hosted_cluster_hcp_url }}\n"
+        dest: "{{ openshift_client_directory }}/.hcp.version"
+        mode: "0644"

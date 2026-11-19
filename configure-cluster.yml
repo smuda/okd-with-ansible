@@ -11,6 +11,7 @@
   roles:
     # First wait for the cluster to be ready
     - role: okd_wait_for_cluster_ready
+      when: not (okd_wait_for_cluster_ready_skip | default(false))
     # Then perform any additional configurations
     - role: okd_operator_catalog_sources
     - role: okd_additional_repository_mirrors
