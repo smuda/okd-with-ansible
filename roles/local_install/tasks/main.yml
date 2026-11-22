@@ -46,4 +46,6 @@
 
 - name: Extract openshift-installer from image
   ansible.builtin.include_tasks: "extract-installer.yml"
+  vars:
+    download_name: Openshift installer
   when: okd_tools_image_override is defined
