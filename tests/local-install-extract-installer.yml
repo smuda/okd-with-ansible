@@ -1,0 +1,83 @@
+---
+# Regression test: the local_install role must render the task names in
+# extract-installer.yml when okd_tools_image_override is set. Tool downloads
+# are pre-seeded as up to date and oc is replaced by a fake, so the test needs
+# neither network nor the real oc.
+#
+#   ansible-playbook tests/local-install-extract-installer.yml
+- name: Extract installer from an image override
+  hosts: localhost
+  connection: local
+  gather_facts: false
+  vars:
+    okd_tools_image_override: registry.example.com/okd/release:test
+    openshift_client_download_url: https://example.com/openshift-client.tar.gz
+    ignition_validate_download_url: https://example.com/ignition-validate
+    sops_download_url: https://example.com/sops
+  tasks:
+    - name: Create scratch directory
+      ansible.builtin.tempfile:
+        state: directory
+        prefix: local-install-test.
+      register: scratch
+
+    - name: Run role against the scratch directory
+      vars:
+        openshift_client_directory: "{{ scratch.path }}/openshift-client"
+        openshift_install_directory: "{{ scratch.path }}/openshift-install"
+        openshift_ignition_validate_executable: "{{ openshift_client_directory }}/ignition-validate"
+        openshift_client_executable: "{{ scratch.path }}/oc"
+        sops_executable: "{{ openshift_client_directory }}/sops"
+      block:
+        - name: Create tool directories
+          ansible.builtin.file:
+            state: directory
+            path: "{{ item }}"
+            mode: '0755'
+          loop:
+            - "{{ openshift_client_directory }}"
+            - "{{ openshift_install_directory }}"
+
+        - name: Pre-seed up to date downloads
+          ansible.builtin.copy:
+            content: "{{ item.content }}"
+            dest: "{{ openshift_client_directory }}/{{ item.dest }}"
+            mode: '0644'
+          loop:
+            - {dest: .openshift-client.url, content: "{{ openshift_client_download_url }}"}
+            - {dest: .ignition-validate.url, content: "{{ ignition_validate_download_url }}"}
+            - {dest: .sops.url, content: "{{ sops_download_url }}"}
+            - {dest: ignition-validate, content: ""}
+            - {dest: sops, content: ""}
+
+        - name: Write fake oc that produces the release tools archives
+          ansible.builtin.copy:
+            content: |
+              #!/bin/sh
+              # Called as: oc adm release extract --tools --to=<dir> <image>
+              dir="${5#--to=}"
+              work="$(mktemp -d)"
+              echo '#!/bin/sh' > "$work/openshift-install"
+              echo '#!/bin/sh' > "$work/oc"
+              tar -czf "$dir/openshift-install-test.tar.gz" -C "$work" openshift-install
+              tar -czf "$dir/openshift-client-test.tar.gz" -C "$work" oc
+            dest: "{{ scratch.path }}/oc"
+            mode: '0755'
+
+        - name: Include role
+          ansible.builtin.include_role:
+            name: "{{ playbook_dir }}/../roles/local_install"
+
+        - name: Stat extracted installer
+          ansible.builtin.stat:
+            path: "{{ openshift_install_directory }}/openshift-install"
+          register: installer
+
+        - name: Assert installer was extracted
+          ansible.builtin.assert:
+            that: installer.stat.exists
+      always:
+        - name: Remove scratch directory
+          ansible.builtin.file:
+            state: absent
+            path: "{{ scratch.path }}"
