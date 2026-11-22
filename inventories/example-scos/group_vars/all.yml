@@ -6,6 +6,9 @@ okd_version: 4.22.0-okd-scos.9
 openshift_client_base_url: https://github.com/okd-project/okd/releases/download
 openshift_installer_base_url: https://github.com/okd-project/okd/releases/download
 
+# Dummy pull secret, so no licensed Red Hat content is pulled into OKD
+create_local_files_pull_secret_file: "{{ playbook_dir }}/pull-secret-okd"
+
 openshift_agent_installation: false
 
 # Retrieve the beta image from https://origin-release.apps.ci.l2s4.p1.openshiftapps.com/#4.13.0-0.okd

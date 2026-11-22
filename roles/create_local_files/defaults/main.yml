@@ -2,6 +2,7 @@
 okd_configuration_validity_duration_s: 21600  # 6 hours
 okd_samples_operator_removed: false
 
+create_local_files_pull_secret_file: "{{ playbook_dir }}/pull-secret"
 create_local_files_network_type: OpenShiftSDN
 create_local_files_machine_networks:
   - cidr: 192.168.60.0/24
