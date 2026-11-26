@@ -1,5 +1,18 @@
 ---
-- name: Create or update the openshift-gitops-operator namespace
+- name: Validate the selected Argo CD operator
+  ansible.builtin.fail:
+    msg: >-
+      argocd_operator must be one of
+      {{ argocd_operator_settings.keys() | join(', ') }};
+      got "{{ argocd_operator }}"
+  when:
+    - argocd_operator not in argocd_operator_settings
+
+- name: Select the Argo CD operator settings
+  ansible.builtin.set_fact:
+    argocd_operator_selected: "{{ argocd_operator_settings[argocd_operator] }}"
+
+- name: Create or update the Argo CD operator namespace
   kubernetes.core.k8s:
     kubeconfig: "{{ openshift_files_kubeconfig }}"
     server_side_apply:
@@ -9,13 +22,15 @@
       apiVersion: v1
       kind: Namespace
       metadata:
-        name: openshift-gitops-operator
+        name: "{{ argocd_operator_selected.namespace }}"
         annotations:
           openshift.io/node-selector: ""
           workload.openshift.io/allowed: management
         labels:
           openshift.io/scc: ""
       spec: {}
+  when:
+    - argocd_operator_selected.create_namespace
 
 - name: Create or update the ClusterRole application-controller-additional
   kubernetes.core.k8s:
@@ -101,7 +116,7 @@
           name: openshift-gitops-argocd-server
           namespace: openshift-gitops
 
-- name: Create or update Openshift Gitops operator group
+- name: Create or update the Argo CD operator group
   kubernetes.core.k8s:
     kubeconfig: "{{ openshift_files_kubeconfig }}"
     server_side_apply:
@@ -110,12 +125,14 @@
       apiVersion: operators.coreos.com/v1
       kind: OperatorGroup
       metadata:
-        name: openshift-gitops-operator
-        namespace: openshift-gitops-operator
+        name: "{{ argocd_operator_selected.namespace }}"
+        namespace: "{{ argocd_operator_selected.namespace }}"
       spec: {}
+  when:
+    - argocd_operator_selected.create_namespace
 
 
-- name: Create or update Openshift Gitops subscription
+- name: Create or update the Argo CD operator subscription
   kubernetes.core.k8s:
     kubeconfig: "{{ openshift_files_kubeconfig }}"
     server_side_apply:
@@ -126,28 +143,28 @@
       metadata:
 #        labels:
 #          operators.coreos.com/argocd-operator.openshift-operators: ""
-        name: openshift-gitops-operator
-        namespace: openshift-gitops-operator
+        name: "{{ argocd_operator }}"
+        namespace: "{{ argocd_operator_selected.namespace }}"
       spec:
-        channel: "{{ argocd_operator_channel }}"
+        channel: "{{ argocd_operator_selected.channel }}"
         installPlanApproval: Automatic
-        name: openshift-gitops-operator
-        source: redhat-operators
+        name: "{{ argocd_operator }}"
+        source: "{{ argocd_operator_selected.source }}"
         sourceNamespace: openshift-marketplace
-        startingCSV: openshift-gitops-operator.{{ openshift_gitops_operator_starting_cluster_service_version }}
+        startingCSV: "{{ argocd_operator_selected.starting_csv }}"
         config:
           env:
             - name: ARGOCD_CLUSTER_CONFIG_NAMESPACES
               value: "{{ argocd_namespace }}"
 
-- name: Wait for Openshift Gitops Operator to start
+- name: Wait for the Argo CD operator to start
   ansible.builtin.shell:
     cmd: |
       set -o pipefail && \
       KUBECONFIG="{{ openshift_files_kubeconfig }}" \
       "{{ openshift_client_executable }}" \
-      -n openshift-gitops-operator \
-      get deploy openshift-gitops-operator-controller-manager -o json \
+      -n "{{ argocd_operator_selected.namespace }}" \
+      get deploy "{{ argocd_operator_selected.deployment }}" -o json \
       | jq '.status.readyReplicas'
     executable: /bin/bash
   register: ready_replicas

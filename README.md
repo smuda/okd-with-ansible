@@ -24,6 +24,7 @@ ansible variables. These are defined in the inventory group vars.
 | variable                                  | description                                                       |
 |-------------------------------------------|-------------------------------------------------------------------|
 | argocd                                    | Whether to install the ArgoCD operator.                           |
+| argocd_operator                           | `openshift-gitops-operator` (default) or `argocd-operator`.       |
 | sealed_secrets                            | Whether to pre-install a sealed secrets decryption key.           |
 | set_etc_hostname_in_ignition_file         | Whether to set the hostname in /etc/hostname.                     |
 | use_control_plane_nodes_for_compute       | Whether to allow masters to be used for regular pods.             |

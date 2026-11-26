@@ -1,0 +1,16 @@
+---
+argocd_operator_settings:
+  openshift-gitops-operator:
+    namespace: openshift-gitops-operator
+    create_namespace: true
+    source: redhat-operators
+    channel: "{{ argocd_operator_channel }}"
+    starting_csv: "openshift-gitops-operator.{{ openshift_gitops_operator_starting_cluster_service_version }}"
+    deployment: openshift-gitops-operator-controller-manager
+  argocd-operator:
+    namespace: openshift-operators
+    create_namespace: false
+    source: community-operators
+    channel: alpha
+    starting_csv: "argocd-operator.{{ argocd_operator_starting_cluster_service_version }}"
+    deployment: argocd-operator-controller-manager
