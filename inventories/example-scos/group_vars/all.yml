@@ -7,7 +7,7 @@ openshift_client_base_url: https://github.com/okd-project/okd/releases/download
 openshift_installer_base_url: https://github.com/okd-project/okd/releases/download
 
 # Dummy pull secret, so no licensed Red Hat content is pulled into OKD
-create_local_files_pull_secret_file: "{{ playbook_dir }}/pull-secret-okd"
+# create_local_files_pull_secret_file: "{{ playbook_dir }}/pull-secret-okd"
 
 openshift_agent_installation: false
 
@@ -123,7 +123,7 @@ okd_disable_redhat_operators: false
 # network_if_name:  eno1
 
 argocd: true
-argocd_operator: argocd-operator
+# argocd_operator: argocd-operator
 argocd_repository: https://github.com/smuda/home-cluster-argo.git
 argocd_repository_revision: main
 argocd_sync_wave_delay: 60
