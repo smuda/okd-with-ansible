@@ -4,7 +4,7 @@
   when:
     - sealed_secrets is defined
 
-- name: Configure openshift-gitops-operator
+- name: Configure the Argo CD operator
   ansible.builtin.include_tasks: "openshift-gitops-operator.yml"
   when:
     - argocd is defined
