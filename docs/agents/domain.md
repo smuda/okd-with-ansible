@@ -5,7 +5,7 @@ documentation when exploring the codebase.
 
 ## Before exploring, read these
 
-- **`CONTEXT.md`** at the repo root.
+- **`GLOSSARY.md`** at the repo root.
 - **`docs/adr/`**: read ADRs that touch the area you're about to
   work in.
 
@@ -21,7 +21,7 @@ This is a single-context repo:
 
 ```
 /
-├── CONTEXT.md
+├── GLOSSARY.md
 └── docs/adr/
     ├── 0001-<decision>.md
     └── 0002-<decision>.md
@@ -31,7 +31,7 @@ This is a single-context repo:
 
 When your output names a domain concept (in an issue title, a
 refactor proposal, a hypothesis, a test name), use the term as
-defined in `CONTEXT.md`. Don't drift to synonyms the glossary
+defined in `GLOSSARY.md`. Don't drift to synonyms the glossary
 explicitly avoids.
 
 If the concept you need isn't in the glossary yet, that's a signal:
