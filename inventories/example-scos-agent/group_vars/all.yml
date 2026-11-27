@@ -117,7 +117,7 @@ okd_disable_default_operator_catalog_sources: true
 # okd_disable_certified_operators: true
 okd_disable_community_operators: false
 # okd_disable_redhat_marketplace: true
-okd_disable_redhat_operators: true
+okd_disable_redhat_operators: false
 # okd_additional_operator_catalog_sources:
 #   - name: community-operators-mirror
 #     image: registry.access.redhat.com/redhat/community-operator-index:v4.12
